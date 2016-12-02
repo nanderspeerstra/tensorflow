@@ -42,7 +42,8 @@ import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
-from tensorflow.models.rnn.translate import data_utils
+#from tensorflow.models.rnn.translate import data_utils
+import data_own_utils
 from tensorflow.models.rnn.translate import seq2seq_model
 
 
@@ -56,7 +57,7 @@ tf.app.flags.DEFINE_integer("batch_size", 64,
 tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
 tf.app.flags.DEFINE_integer("en_vocab_size", 40000, "English vocabulary size.")
-tf.app.flags.DEFINE_integer("fr_vocab_size", 40000, "French vocabulary size.")
+tf.app.flags.DEFINE_integer("ll_vocab_size", 40000, "French vocabulary size.")
 tf.app.flags.DEFINE_string("data_dir", "/tmp", "Data directory")
 tf.app.flags.DEFINE_string("train_dir", "/tmp", "Training directory.")
 tf.app.flags.DEFINE_integer("max_train_data_size", 0,
@@ -75,6 +76,10 @@ FLAGS = tf.app.flags.FLAGS
 # We use a number of buckets and pad to the closest one for efficiency.
 # See seq2seq_model.Seq2SeqModel for details of how they work.
 _buckets = [(5, 10), (10, 15), (20, 25), (40, 50)]
+
+# Keep track of the eval bucket scores. Increasing while train perplexity decreasing == overfitting
+bucketScore = {0:[0,1000000000000],1:[0,1000000000000000],2:[0,100000000000000],3:[0,100000000000]}
+trainScore = 100000000000000000000
 
 
 def read_data(source_path, target_path, max_size=None):
@@ -106,7 +111,7 @@ def read_data(source_path, target_path, max_size=None):
           sys.stdout.flush()
         source_ids = [int(x) for x in source.split()]
         target_ids = [int(x) for x in target.split()]
-        target_ids.append(data_utils.EOS_ID)
+        target_ids.append(data_own_utils.EOS_ID)
         for bucket_id, (source_size, target_size) in enumerate(_buckets):
           if len(source_ids) < source_size and len(target_ids) < target_size:
             data_set[bucket_id].append([source_ids, target_ids])
@@ -120,7 +125,7 @@ def create_model(session, forward_only):
   dtype = tf.float16 if FLAGS.use_fp16 else tf.float32
   model = seq2seq_model.Seq2SeqModel(
       FLAGS.en_vocab_size,
-      FLAGS.fr_vocab_size,
+      FLAGS.ll_vocab_size,
       _buckets,
       FLAGS.size,
       FLAGS.num_layers,
@@ -128,35 +133,35 @@ def create_model(session, forward_only):
       FLAGS.batch_size,
       FLAGS.learning_rate,
       FLAGS.learning_rate_decay_factor,
-      forward_only=forward_only,
-      dtype=dtype)
+      forward_only=forward_only)
   ckpt = tf.train.get_checkpoint_state(FLAGS.train_dir)
-  if ckpt and tf.train.checkpoint_exists(ckpt.model_checkpoint_path):
+  if ckpt and tf.gfile.Exists(ckpt.model_checkpoint_path):
     print("Reading model parameters from %s" % ckpt.model_checkpoint_path)
     model.saver.restore(session, ckpt.model_checkpoint_path)
   else:
     print("Created model with fresh parameters.")
-    session.run(tf.global_variables_initializer())
+    session.run(tf.initialize_all_variables())
   return model
 
-
 def train():
-  """Train a en->fr translation model using WMT data."""
-  # Prepare WMT data.
-  print("Preparing WMT data in %s" % FLAGS.data_dir)
-  en_train, fr_train, en_dev, fr_dev, _, _ = data_utils.prepare_wmt_data(
-      FLAGS.data_dir, FLAGS.en_vocab_size, FLAGS.fr_vocab_size)
-
-  with tf.Session() as sess:
+  
+  # Prepare data.
+  print("Preparing data in %s" % FLAGS.data_dir)
+  en_train, ll_train, en_dev, ll_dev, _, _ = data_own_utils.prepare_data(
+      FLAGS.data_dir, FLAGS.en_vocab_size, FLAGS.ll_vocab_size)
+  
+  with tf.Session() as sess:	 
+	  
     # Create model.
     print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size))
     model = create_model(sess, False)
+    
 
     # Read data into buckets and compute their sizes.
     print ("Reading development and training data (limit: %d)."
            % FLAGS.max_train_data_size)
-    dev_set = read_data(en_dev, fr_dev)
-    train_set = read_data(en_train, fr_train, FLAGS.max_train_data_size)
+    dev_set = read_data(en_dev, ll_dev)
+    train_set = read_data(en_train, ll_train, FLAGS.max_train_data_size)
     train_bucket_sizes = [len(train_set[b]) for b in xrange(len(_buckets))]
     train_total_size = float(sum(train_bucket_sizes))
 
@@ -213,8 +218,27 @@ def train():
                                        target_weights, bucket_id, True)
           eval_ppx = math.exp(float(eval_loss)) if eval_loss < 300 else float(
               "inf")
+          
+          if eval_ppx < bucketScore[bucket_id][1]:
+              bucketScore[bucket_id] = [0,eval_ppx]
+          else:
+              bucketScore[bucket_id][0] += 1
           print("  eval: bucket %d perplexity %.2f" % (bucket_id, eval_ppx))
+          #print(bucketScore)
         sys.stdout.flush()
+        
+        # Check for overfitting
+        goOn = False
+        print('Checking for overfitting...')
+        for (num,score) in bucketScore.items():
+            #print("Check for overfitting: {}\t{}".format(num, score))
+            if num < 3:
+                goOn = True
+
+        if not goOn:
+            print("Starting to overfit. Stopping code!")
+            sys.exit(0)
+
 
 
 def decode():
@@ -227,9 +251,9 @@ def decode():
     en_vocab_path = os.path.join(FLAGS.data_dir,
                                  "vocab%d.en" % FLAGS.en_vocab_size)
     fr_vocab_path = os.path.join(FLAGS.data_dir,
-                                 "vocab%d.fr" % FLAGS.fr_vocab_size)
-    en_vocab, _ = data_utils.initialize_vocabulary(en_vocab_path)
-    _, rev_fr_vocab = data_utils.initialize_vocabulary(fr_vocab_path)
+                                 "vocab%d.nl" % FLAGS.ll_vocab_size)
+    en_vocab, _ = data_own_utils.initialize_vocabulary(en_vocab_path)
+    _, rev_fr_vocab = data_own_utils.initialize_vocabulary(fr_vocab_path)
 
     # Decode from standard input.
     sys.stdout.write("> ")
@@ -237,7 +261,7 @@ def decode():
     sentence = sys.stdin.readline()
     while sentence:
       # Get token-ids for the input sentence.
-      token_ids = data_utils.sentence_to_token_ids(tf.compat.as_bytes(sentence), en_vocab)
+      token_ids = data_own_utils.sentence_to_token_ids(tf.compat.as_bytes(sentence), en_vocab)
       # Which bucket does it belong to?
       bucket_id = len(_buckets) - 1
       for i, bucket in enumerate(_buckets):
@@ -256,8 +280,8 @@ def decode():
       # This is a greedy decoder - outputs are just argmaxes of output_logits.
       outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
       # If there is an EOS symbol in outputs, cut them at that point.
-      if data_utils.EOS_ID in outputs:
-        outputs = outputs[:outputs.index(data_utils.EOS_ID)]
+      if data_own_utils.EOS_ID in outputs:
+        outputs = outputs[:outputs.index(data_own_utils.EOS_ID)]
       # Print out French sentence corresponding to outputs.
       print(" ".join([tf.compat.as_str(rev_fr_vocab[output]) for output in outputs]))
       print("> ", end="")
