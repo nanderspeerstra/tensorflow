@@ -268,7 +268,7 @@ def prepare_data(data_dir, en_vocabulary_size, fr_vocabulary_size, tokenizer=Non
   #train_path = get_wmt_enfr_train_set(data_dir)
   #dev_path = get_wmt_enfr_dev_set(data_dir)
   
-  train_path = os.path.join(data_dir, "NN BI")
+  train_path = os.path.join(data_dir, "NN BI train")
   dev_path = os.path.join(data_dir, "NN BI dev")  
   
 

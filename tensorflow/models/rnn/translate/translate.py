@@ -42,7 +42,7 @@ import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
-#from tensorflow.models.rnn.translate import data_utils
+import data_utils
 import data_own_utils
 from tensorflow.models.rnn.translate import seq2seq_model
 
@@ -72,7 +72,7 @@ tf.app.flags.DEFINE_string("decode_input", "stdin",
                             "it will read from this file")
 tf.app.flags.DEFINE_string("decode_output", "stdout",
                             "Output for the decode function. If set to something other " 
-                            "than 'stdout', it will write to that file")														
+                            "than 'stdout', it will write to that file")                                                                                                                
 tf.app.flags.DEFINE_boolean("self_test", False,
                             "Run a self-test if this is set to True.")
 tf.app.flags.DEFINE_boolean("use_fp16", False,
@@ -157,8 +157,8 @@ def train():
   en_train, ll_train, en_dev, ll_dev, _, _ = data_own_utils.prepare_data(
       FLAGS.data_dir, FLAGS.en_vocab_size, FLAGS.ll_vocab_size)
   
-  with tf.Session() as sess:	 
-	  
+  with tf.Session() as sess:     
+          
     # Create model.
     print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size))
     model = create_model(sess, False)
@@ -265,6 +265,8 @@ def decode():
     # Open output (file or stdout) for writing output to
     output = data_utils.open_output(FLAGS.decode_output)
     for sentence in data_utils.get_input_method(FLAGS.decode_input):
+      shouldTranslate = True
+
       # Get token-ids for the input sentence.
       token_ids = data_own_utils.sentence_to_token_ids(tf.compat.as_bytes(sentence), en_vocab)
       # Which bucket does it belong to?
@@ -274,21 +276,26 @@ def decode():
           bucket_id = i
           break
       else:
-        logging.warning("Sentence truncated: %s", sentence) 
+        logging.warning("Sentence truncated: %s", sentence)
+        shouldTranslate = False
 
-      # Get a 1-element batch to feed the sentence to the model.
-      encoder_inputs, decoder_inputs, target_weights = model.get_batch(
-          {bucket_id: [(token_ids, [])]}, bucket_id)
-      # Get output logits for the sentence.
-      _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
+      if shouldTranslate:
+
+        # Get a 1-element batch to feed the sentence to the model.
+        encoder_inputs, decoder_inputs, target_weights = model.get_batch(
+            {bucket_id: [(token_ids, [])]}, bucket_id)
+        # Get output logits for the sentence.
+        _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
                                        target_weights, bucket_id, True)
-      # This is a greedy decoder - outputs are just argmaxes of output_logits.
-      outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
-      # If there is an EOS symbol in outputs, cut them at that point.
-      if data_own_utils.EOS_ID in outputs:
-        outputs = outputs[:outputs.index(data_own_utils.EOS_ID)]
-      # Print out French sentence corresponding to outputs.
-      output.write(" ".join([tf.compat.as_str(rev_fr_vocab[output]) for output in outputs]) + "\n")
+        # This is a greedy decoder - outputs are just argmaxes of output_logits.
+        outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
+        # If there is an EOS symbol in outputs, cut them at that point.
+        if data_own_utils.EOS_ID in outputs:
+            outputs = outputs[:outputs.index(data_own_utils.EOS_ID)]
+        # Print out French sentence corresponding to outputs.
+        output.write(" ".join([tf.compat.as_str(rev_fr_vocab[output]) for output in outputs]) + "\n")
+      else :
+          output.write("\n")
 
 
 def self_test():
